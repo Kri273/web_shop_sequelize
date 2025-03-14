@@ -2,6 +2,9 @@ const Product = require("../models/product");
 const Cart = require("../models/cart");
 const User = require("../models/user");
 const product = require("./product");
+const CartItem = require("../models/cart-item");
+const Order = require("../models/order");
+const OrderItems = require("../models/order-items");
 
 class shopController {
   async getAllProducts(req, res) {
@@ -27,31 +30,26 @@ class shopController {
     if (!productId || !quantity) {
       return res.status(400).json({ error: "No Product ID or quantity" });
     }
-    console.log("Received productId:", productId);
-    console.log("Received quantity:", quantity);
-
     const userCart = await req.user.getCart();
-
-    const cartProducts = await userCart.getProducts({
-      where: { id: productId },
-    });
-    if (cartProducts.length > 0) {
-      let existingProduct = cartProducts[0];
-      let newQuantity = (existingProduct.quantity += quantity);
-      await existingProduct.save({ quantity: newQuantity });
-    } else {
-      const product = await Product.findByPk(productId);
-      if (!product) {
-        return res.status(404).json({ error: "Product not found" });
-      }
-      const newCartItem = await userCart.addProduct(product, {
-        through: { quantity: quantity },
-      });
-      return res
-        .status(201)
-        .json({ message: "Product added to cart", cartItem: newCartItem });
+    const product = await Product.findByPk(productId);
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
     }
-  }
+    const cartItem = await CartItem.findOne({
+      where: { cartId: userCart.id, productId: productId },
+    });
+
+    if (cartItem) {
+      cartItem.quantity = Number(cartItem.quantity) + Number(quantity);
+      await cartItem.save();
+      return res.status(200).json({ message: "Cart updated", cartItem });
+    } else {
+      const newCartItem = await userCart.addProduct(product, {
+        through: { quantity: quantity },});
+
+      return res.status(201).json({ message: "Product added to cart", cartItem: newCartItem });
+    }
+}
 
   async removeFromCart(req, res) {
     const { productId } = req.body;
@@ -73,6 +71,56 @@ class shopController {
     } else {
       return res.status(404).json({ message: "Product not found in cart" });
     }
+  }
+
+  async OrderItems(req, res) {
+    const userId = req.user.id;
+    const userCart = await req.user.getCart();
+    const cartItems = await userCart.getProducts({
+      attributes: ["id"],
+      through: { attributes: ["quantity"], },
+    });
+
+    if (cartItems.length === 0) {
+      return res.status(400).json({ error: "Cart is empty" });
+    }
+
+    const orderItems = cartItems.map((cartItem) => {
+      return {
+        productId: cartItem.id,
+        quantity: cartItem.cartItem ? cartItem.cartItem.quantity : 0,
+      };
+    });
+
+    const newOrder = await Order.create({ userId });
+
+    for (const item of orderItems) {
+      await OrderItems.create({ orderId: newOrder.id, ...item });
+    }
+
+    return res.status(201).json({ message: "Order created!", newOrder });
+  }
+
+  async viewOrderedItems(req, res) {
+    const userId = req.user.id;
+    const orderedItems = await Order.findAll({
+      where: { userId },
+      include: [
+        {
+          model: OrderItems,
+          as: "orderItems",
+          include: [
+            {
+              model: Product,
+              as: "product",
+              attributes: ["id", "title"],
+            },
+          ],
+        },
+      ],
+    });
+
+    res.status(201).json({ orders: orderedItems });
   }
 }
 
